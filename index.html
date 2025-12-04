@@ -258,6 +258,7 @@
                 <!-- 郵便番号 (entry.1064219760) -->
                 <div>
                     <label for="zipCode" class="block text-sm font-medium text-gray-700">郵便番号 (ハイフンなし7桁) <span class="text-red-500">*</span></label>
+                    <!-- maxlengthを7に固定し、入力完了で検索を開始する -->
                     <input type="number" id="zipCode" name="entry.1064219760" required class="form-input mt-1" placeholder="1000001" pattern="\d{7}" maxlength="7">
                     <p id="zipCodeHint" class="text-xs text-gray-500 mt-1">郵便番号を入力すると、自動で住所が入力されます。</p>
                 </div>
@@ -274,10 +275,9 @@
                     <input type="text" id="personName" name="entry.1387664406" required class="form-input mt-1" placeholder="山田 太郎">
                 </div>
                 
-                <!-- 新規追加: メールアドレス (entry.2093556012) -->
+                <!-- メールアドレス (entry.2093556012) -->
                 <div>
                     <label for="email" class="block text-sm font-medium text-gray-700">メールアドレス <span class="text-red-500">*</span></label>
-                    <!-- GoogleフォームのダミーエントリーIDを使用 -->
                     <input type="email" id="email" name="entry.2093556012" required class="form-input mt-1" placeholder="example@company.co.jp">
                 </div>
 
@@ -408,6 +408,30 @@
             function closeModalHandler() {
                 alertModal.classList.remove('open');
             }
+            
+            // 指数バックオフ付きのFetch関数（そのまま維持）
+            async function fetchWithExponentialBackoff(url, options = {}, maxRetries = 5) {
+                for (let attempt = 0; attempt < maxRetries; attempt++) {
+                    try {
+                        const response = await fetch(url, options);
+                        // no-corsモードの場合、response.okは常にfalseになるため、通信エラーが起きなかったことを成功と見なす
+                        if (options.mode === 'no-cors' || response.ok) {
+                             return response;
+                        } else {
+                             throw new Error(`HTTP error! status: ${response.status}`);
+                        }
+                    } catch (error) {
+                        if (attempt === maxRetries - 1) {
+                            console.error("Fetch failed after all retries:", error);
+                            throw error;
+                        }
+                        const delay = Math.pow(2, attempt) * 1000;
+                        await new Promise(resolve => setTimeout(resolve, delay));
+                        // console.log(`Retry attempt ${attempt + 1} after ${delay}ms...`); // デバッグ用
+                    }
+                }
+            }
+
 
             // --- シミュレーターロジック ---
             function updateSimulator() {
@@ -464,72 +488,64 @@
             const zipCodeInput = document.getElementById('zipCode');
             const addressInput = document.getElementById('address');
             const zipCodeHint = document.getElementById('zipCodeHint');
-            
-            async function fetchWithExponentialBackoff(url, options = {}, maxRetries = 5) {
-                for (let attempt = 0; attempt < maxRetries; attempt++) {
-                    try {
-                        const response = await fetch(url, options);
-                        if (!response.ok) {
-                            throw new Error(`HTTP error! status: ${response.status}`);
-                        }
-                        return response;
-                    } catch (error) {
-                        if (attempt === maxRetries - 1) {
-                            console.error("Fetch failed after all retries:", error);
-                            throw error;
-                        }
-                        const delay = Math.pow(2, attempt) * 1000;
-                        await new Promise(resolve => setTimeout(resolve, delay));
-                        // console.log(`Retry attempt ${attempt + 1} after ${delay}ms...`); // デバッグ用
-                    }
-                }
-            }
+            let isSearching = false; // 連続検索防止フラグ
 
-            zipCodeInput.addEventListener('blur', async () => {
+            zipCodeInput.addEventListener('input', async () => {
                 const zipCode = zipCodeInput.value.replace(/[^0-9]/g, ''); 
                 
-                if (zipCode.length === 7) {
-                    zipCodeHint.textContent = '住所を検索中です...';
-                    zipCodeHint.classList.remove('text-green-600', 'text-red-600');
-                    zipCodeHint.classList.add('text-gray-500');
-                    
-                    const apiUrl = `https://zipcloud.hbrk.jp/api/search?zipcode=${zipCode}`;
+                // 7桁でない、またはすでに検索中の場合は処理を中断
+                if (zipCode.length !== 7 || isSearching) {
+                    if (zipCode.length > 7) {
+                         zipCodeHint.textContent = '郵便番号は7桁までです。';
+                         zipCodeHint.classList.add('text-red-600');
+                         zipCodeHint.classList.remove('text-gray-500', 'text-green-600');
+                    } else if (zipCode.length > 0) {
+                         zipCodeHint.textContent = '郵便番号を入力すると、自動で住所が入力されます。';
+                         zipCodeHint.classList.add('text-gray-500');
+                         zipCodeHint.classList.remove('text-red-600', 'text-green-600');
+                    }
+                    return;
+                }
 
-                    try {
-                        // fetchWithExponentialBackoffを使用してAPI呼び出し
-                        const response = await fetchWithExponentialBackoff(apiUrl);
-                        const data = await response.json();
+                isSearching = true; // 検索開始フラグを立てる
+                zipCodeHint.textContent = '住所を検索中です...';
+                zipCodeHint.classList.remove('text-green-600', 'text-red-600');
+                zipCodeHint.classList.add('text-gray-500');
+                
+                const apiUrl = `https://zipcloud.hbrk.jp/api/search?zipcode=${zipCode}`;
 
-                        if (data.results && data.results.length > 0) {
-                            const result = data.results[0];
-                            const address = result.address1 + result.address2 + result.address3;
-                            
-                            addressInput.value = address;
-                            zipCodeHint.textContent = '住所が自動入力されました。必要に応じて番地などを追記してください。';
-                            zipCodeHint.classList.remove('text-gray-500', 'text-red-600');
-                            zipCodeHint.classList.add('text-green-600');
-                        } else {
-                            zipCodeHint.textContent = '指定された郵便番号の住所は見つかりませんでした。手動で入力してください。';
-                            zipCodeHint.classList.remove('text-gray-500', 'text-green-600');
-                            zipCodeHint.classList.add('text-red-600');
-                        }
-                    } catch (error) {
-                        console.error('郵便番号検索エラー:', error);
-                        zipCodeHint.textContent = '通信エラーが発生しました。手動で住所を入力してください。';
+                try {
+                    // fetchWithExponentialBackoffを使用してAPI呼び出し
+                    const response = await fetchWithExponentialBackoff(apiUrl);
+                    const data = await response.json();
+
+                    if (data.results && data.results.length > 0) {
+                        const result = data.results[0];
+                        const address = result.address1 + result.address2 + result.address3;
+                        
+                        addressInput.value = address;
+                        zipCodeHint.textContent = '住所が自動入力されました。番地などを追記してください。';
+                        zipCodeHint.classList.remove('text-gray-500', 'text-red-600');
+                        zipCodeHint.classList.add('text-green-600');
+                    } else {
+                        zipCodeHint.textContent = '指定された郵便番号の住所は見つかりませんでした。手動で入力してください。';
                         zipCodeHint.classList.remove('text-gray-500', 'text-green-600');
                         zipCodeHint.classList.add('text-red-600');
                     }
-                } else if (zipCode.length > 0) {
-                    zipCodeHint.textContent = '郵便番号は7桁で入力してください。';
+                } catch (error) {
+                    console.error('郵便番号検索エラー:', error);
+                    zipCodeHint.textContent = '通信エラーが発生しました。手動で住所を入力してください。';
                     zipCodeHint.classList.remove('text-gray-500', 'text-green-600');
                     zipCodeHint.classList.add('text-red-600');
+                } finally {
+                    isSearching = false; // 検索終了フラグを解除
                 }
             });
 
 
-            // --- フォーム送信ロジックの修正 ---
+            // --- フォーム送信ロジックの修正（GETリクエスト方式への変更） ---
 
-            // フォーム送信制御（非同期POST）
+            // フォーム送信制御（非同期GET/URLクエリ方式）
             subsidyForm.addEventListener('submit', async (e) => {
                 e.preventDefault(); 
                 
@@ -543,23 +559,35 @@
                 submitButton.disabled = true;
                 submitButton.textContent = "送信中...";
 
+                // フォームデータをGoogle FormsのエントリーIDとマッピングしてオブジェクト化
+                const formData = {
+                    'entry.1593006436': document.getElementById('companyName').value,
+                    'entry.1064219760': document.getElementById('zipCode').value,
+                    'entry.1023774883': document.getElementById('address').value,
+                    'entry.1387664406': document.getElementById('personName').value,
+                    'entry.2093556012': document.getElementById('email').value,
+                    'entry.1818165565': document.getElementById('phoneNumber').value,
+                    'entry.1478206587': document.getElementById('fleetSize').value,
+                };
+                
+                // URLクエリパラメータを作成
+                const params = new URLSearchParams(formData).toString();
+                const fullUrl = `${GOOGLE_FORM_URL}?${params}`;
+
                 try {
-                    // フォームデータを組み立て
-                    const formData = new FormData(subsidyForm);
-                    
-                    // GoogleフォームはPOSTリクエストしか受け付けないため、Fetch APIで送信します
-                    const response = await fetchWithExponentialBackoff(GOOGLE_FORM_URL, {
-                        method: 'POST',
-                        body: new URLSearchParams(formData), // URLSearchParamsを使ってapplication/x-www-form-urlencoded形式で送信
-                        mode: 'no-cors' // Google FormsへのPOSTではCORSエラーを避けるため必須
+                    // タイムアウトを防ぐため、GETリクエスト（no-corsモード）で送信を試みる
+                    // Google FormsはGETでもデータを受け付けることが知られており、これが一番確実な方法
+                    await fetchWithExponentialBackoff(fullUrl, {
+                        method: 'GET',
+                        mode: 'no-cors' // ブラウザのリダイレクトやCORSエラーを無視して送信を試行
                     });
 
-                    // Google Formsへのno-cors POSTは常に成功（response.okは常にtrue）と見なされるため、
-                    // ここではレスポンス内容ではなく、エラーが発生しなかったことを成功とします。
+                    // 通信エラーが発生しなかった場合（タイムアウトを除く）は、成功とみなす
                     openModal('送信完了', 'お問い合わせ内容を受け付けました。担当者より改めてご連絡いたします。ありがとうございました。', true);
 
                 } catch (error) {
                     console.error('フォーム送信エラー:', error);
+                    // タイムアウトなどのエラーが発生した場合
                     openModal('送信失敗', '通信エラーまたはサーバーエラーにより、フォームの送信に失敗しました。時間をおいて再度お試しいただくか、別の方法でご連絡ください。', false);
                 } finally {
                     // 成功/失敗にかかわらず、ボタンを元に戻す
