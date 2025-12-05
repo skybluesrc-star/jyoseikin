@@ -366,6 +366,7 @@
     <script>
         document.addEventListener('DOMContentLoaded', () => {
             // --- 定数と要素の取得 ---
+            // Google FormsのPOST用エンドポイントURL (formResponseを使用)
             const GOOGLE_FORM_URL = "https://docs.google.com/forms/d/e/1FAIpQLSf9cbtYd_O2d6_uW87AN9pgwnTT0NoAWKIdnPLsvb1WQG5CUA/formResponse";
             
             const drivingFeeSlider = document.getElementById('drivingFee');
@@ -409,23 +410,22 @@
                 alertModal.classList.remove('open');
             }
             
-            // 指数バックオフ付きのFetch関数（そのまま維持）
+            // 指数バックオフ付きのFetch関数
             async function fetchWithExponentialBackoff(url, options = {}, maxRetries = 5) {
                 for (let attempt = 0; attempt < maxRetries; attempt++) {
                     try {
                         const response = await fetch(url, options);
+                        // POSTの場合、Google Formsは通常302リダイレクトを返すため、response.okは使えない
                         // no-corsモードの場合、response.okは常にfalseになるため、通信エラーが起きなかったことを成功と見なす
-                        if (options.mode === 'no-cors' || response.ok) {
-                             return response;
-                        } else {
-                             throw new Error(`HTTP error! status: ${response.status}`);
-                        }
+                        // 20秒後のタイムアウトを避けるため、レスポンスが返ってくることを成功とする
+                        return response;
                     } catch (error) {
                         if (attempt === maxRetries - 1) {
+                            // 最後の試行も失敗
                             console.error("Fetch failed after all retries:", error);
                             throw error;
                         }
-                        const delay = Math.pow(2, attempt) * 1000;
+                        const delay = Math.pow(2, attempt) * 1000; // 1s, 2s, 4s, ...
                         await new Promise(resolve => setTimeout(resolve, delay));
                         // console.log(`Retry attempt ${attempt + 1} after ${delay}ms...`); // デバッグ用
                     }
@@ -433,7 +433,7 @@
             }
 
 
-            // --- シミュレーターロジック ---
+            // --- シミュレーターロジック (変更なし) ---
             function updateSimulator() {
                 const drivingFee = parseInt(drivingFeeSlider.value);
                 const trainingHours = parseInt(trainingHoursSlider.value);
@@ -484,11 +484,11 @@
                 eligibilityResult.classList.remove('hidden');
             });
 
-            // --- フォームロジック（郵便番号自動入力の修正） ---
+            // --- フォームロジック（郵便番号自動入力の再確認） ---
             const zipCodeInput = document.getElementById('zipCode');
             const addressInput = document.getElementById('address');
             const zipCodeHint = document.getElementById('zipCodeHint');
-            let isSearching = false; // 連続検索防止フラグ
+            let isSearching = false; 
 
             zipCodeInput.addEventListener('input', async () => {
                 const zipCode = zipCodeInput.value.replace(/[^0-9]/g, ''); 
@@ -507,7 +507,7 @@
                     return;
                 }
 
-                isSearching = true; // 検索開始フラグを立てる
+                isSearching = true; 
                 zipCodeHint.textContent = '住所を検索中です...';
                 zipCodeHint.classList.remove('text-green-600', 'text-red-600');
                 zipCodeHint.classList.add('text-gray-500');
@@ -515,12 +515,13 @@
                 const apiUrl = `https://zipcloud.hbrk.jp/api/search?zipcode=${zipCode}`;
 
                 try {
-                    // fetchWithExponentialBackoffを使用してAPI呼び出し
+                    // API呼び出し
                     const response = await fetchWithExponentialBackoff(apiUrl);
                     const data = await response.json();
 
                     if (data.results && data.results.length > 0) {
                         const result = data.results[0];
+                        // 都道府県、市区町村、町域を結合
                         const address = result.address1 + result.address2 + result.address3;
                         
                         addressInput.value = address;
@@ -528,24 +529,26 @@
                         zipCodeHint.classList.remove('text-gray-500', 'text-red-600');
                         zipCodeHint.classList.add('text-green-600');
                     } else {
+                        // 住所が見つからない場合
                         zipCodeHint.textContent = '指定された郵便番号の住所は見つかりませんでした。手動で入力してください。';
                         zipCodeHint.classList.remove('text-gray-500', 'text-green-600');
                         zipCodeHint.classList.add('text-red-600');
                     }
                 } catch (error) {
+                    // 通信自体が失敗した場合
                     console.error('郵便番号検索エラー:', error);
                     zipCodeHint.textContent = '通信エラーが発生しました。手動で住所を入力してください。';
                     zipCodeHint.classList.remove('text-gray-500', 'text-green-600');
                     zipCodeHint.classList.add('text-red-600');
                 } finally {
-                    isSearching = false; // 検索終了フラグを解除
+                    isSearching = false; 
                 }
             });
 
 
-            // --- フォーム送信ロジックの修正（GETリクエスト方式への変更） ---
+            // --- フォーム送信ロジックの再修正（確実性の高いPOST方式） ---
 
-            // フォーム送信制御（非同期GET/URLクエリ方式）
+            // フォーム送信制御（非同期POST/Form-Encoded方式）
             subsidyForm.addEventListener('submit', async (e) => {
                 e.preventDefault(); 
                 
@@ -559,31 +562,34 @@
                 submitButton.disabled = true;
                 submitButton.textContent = "送信中...";
 
-                // フォームデータをGoogle FormsのエントリーIDとマッピングしてオブジェクト化
-                const formData = {
-                    'entry.1593006436': document.getElementById('companyName').value,
-                    'entry.1064219760': document.getElementById('zipCode').value,
-                    'entry.1023774883': document.getElementById('address').value,
-                    'entry.1387664406': document.getElementById('personName').value,
-                    'entry.2093556012': document.getElementById('email').value,
-                    'entry.1818165565': document.getElementById('phoneNumber').value,
-                    'entry.1478206587': document.getElementById('fleetSize').value,
-                };
+                // フォームデータをGoogle FormsのエントリーIDとマッピングしてFormDataオブジェクトを作成
+                const formData = new FormData();
+                formData.append('entry.1593006436', document.getElementById('companyName').value);
+                formData.append('entry.1064219760', document.getElementById('zipCode').value);
+                formData.append('entry.1023774883', document.getElementById('address').value);
+                formData.append('entry.1387664406', document.getElementById('personName').value);
+                formData.append('entry.2093556012', document.getElementById('email').value);
+                formData.append('entry.1818165565', document.getElementById('phoneNumber').value);
+                formData.append('entry.1478206587', document.getElementById('fleetSize').value);
                 
-                // URLクエリパラメータを作成
-                const params = new URLSearchParams(formData).toString();
-                const fullUrl = `${GOOGLE_FORM_URL}?${params}`;
+                // FormDataをx-www-form-urlencoded形式の文字列に変換
+                const formBody = new URLSearchParams(formData).toString();
 
                 try {
-                    // タイムアウトを防ぐため、GETリクエスト（no-corsモード）で送信を試みる
-                    // Google FormsはGETでもデータを受け付けることが知られており、これが一番確実な方法
-                    await fetchWithExponentialBackoff(fullUrl, {
-                        method: 'GET',
-                        mode: 'no-cors' // ブラウザのリダイレクトやCORSエラーを無視して送信を試行
+                    // POSTリクエスト（no-corsモード）で送信を試みる
+                    // Content-Typeをapplication/x-www-form-urlencodedに設定し、データが値として確実に認識されるようにする
+                    await fetchWithExponentialBackoff(GOOGLE_FORM_URL, {
+                        method: 'POST',
+                        mode: 'no-cors', // クロスオリジンでのエラーを避ける
+                        headers: {
+                            'Content-Type': 'application/x-www-form-urlencoded' // 必須
+                        },
+                        body: formBody
                     });
 
-                    // 通信エラーが発生しなかった場合（タイムアウトを除く）は、成功とみなす
+                    // fetchが成功してレスポンスが返ってきた場合（フォームの受付が完了したと見なす）
                     openModal('送信完了', 'お問い合わせ内容を受け付けました。担当者より改めてご連絡いたします。ありがとうございました。', true);
+                    subsidyForm.reset(); // フォームをリセット
 
                 } catch (error) {
                     console.error('フォーム送信エラー:', error);
