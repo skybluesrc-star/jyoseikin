@@ -47,12 +47,13 @@
             color: white;
             transition: background-color 0.3s;
         }
-        .cta-button:hover {
+        .cta-button:hover:not(:disabled) {
             background-color: #1D4ED8;
         }
         .cta-button:disabled {
             background-color: #9CA3AF;
             cursor: not-allowed;
+            color: #D1D5DB;
         }
         .form-input {
             width: 100%;
@@ -110,8 +111,9 @@
             <div class="text-2xl font-bold accent-color-text">
                 <span class="text-gray-600">助成金活用</span>ガイド
             </div>
-            <a href="#contact" class="cta-button font-bold py-2 px-4 rounded-lg shadow-lg">
-                無料相談フォーム
+            <!-- 無料相談ボタンも初期化中は無効にする -->
+            <a href="#contact" id="headerCta" class="cta-button font-bold py-2 px-4 rounded-lg shadow-lg">
+                システムを初期化中...
             </a>
         </nav>
     </header>
@@ -245,7 +247,7 @@
                     まずは無料シミュレーション結果を元に、詳細な受給可能性についてお話しましょう。
                 </p>
                 <!-- ユーザーID表示（デバッグ・連携確認用） -->
-                <p id="authStatus" class="text-xs text-gray-400 mt-2"></p>
+                <p id="authStatus" class="text-xs text-gray-400 mt-2">システムを初期化中...</p>
             </div>
 
             <form id="subsidyForm" class="max-w-xl mx-auto space-y-6">
@@ -303,8 +305,9 @@
                 </div>
 
                 <div class="text-center pt-4">
-                    <button type="submit" id="submitButton" class="cta-button inline-block font-bold py-3 px-8 rounded-lg shadow-xl text-lg w-full transform transition hover:scale-[1.01]">
-                        この内容で無料相談を申し込む
+                    <!-- 初期状態でボタンを無効化し、テキストを初期化中に変更 -->
+                    <button type="submit" id="submitButton" disabled class="cta-button inline-block font-bold py-3 px-8 rounded-lg shadow-xl text-lg w-full transform transition hover:scale-[1.01]">
+                        システムを初期化中...
                     </button>
                 </div>
             </form>
@@ -386,13 +389,24 @@
             db = getFirestore(app);
             auth = getAuth(app);
 
+            // 要素の取得
+            const submitButton = document.getElementById('submitButton');
+            const headerCta = document.getElementById('headerCta');
+            const authStatus = document.getElementById('authStatus');
+
             // 認証状態の監視
             onAuthStateChanged(auth, async (user) => {
                 if (user) {
                     // 認証完了
                     userId = user.uid;
                     isAuthReady = true;
-                    document.getElementById('authStatus').textContent = `ユーザーID: ${userId}`;
+                    // UIを更新してボタンを有効化
+                    authStatus.textContent = `認証完了 (ID: ${userId})`;
+                    submitButton.disabled = false;
+                    submitButton.textContent = "この内容で無料相談を申し込む";
+                    headerCta.disabled = false;
+                    headerCta.textContent = "無料相談フォーム";
+
                 } else {
                     // 認証されていない場合は匿名認証を試みる
                     try {
@@ -404,7 +418,12 @@
                     } catch (error) {
                         console.error("Firebase Auth failed:", error);
                         isAuthReady = true; // 認証試行は完了
-                        document.getElementById('authStatus').textContent = `認証エラー: 匿名認証に失敗しました。`;
+                        // 認証失敗の場合もボタンを有効化し、エラーメッセージを表示
+                        authStatus.textContent = `認証エラーが発生しました。データを保存できません。`;
+                        submitButton.disabled = true;
+                        submitButton.textContent = "システムエラーにより送信不可";
+                        headerCta.disabled = true;
+                        headerCta.textContent = "システムエラー";
                     }
                 }
             });
@@ -414,14 +433,13 @@
             document.getElementById('authStatus').textContent = `Firebase初期化エラー。`;
         }
 
-        // --- 定数と要素の取得 ---
+        // --- 定数と要素の取得（Auth関連以外のもの） ---
         const drivingFeeSlider = document.getElementById('drivingFee');
         const trainingHoursSlider = document.getElementById('trainingHours');
         const checkButton = document.getElementById('checkButton');
         
         const subsidyForm = document.getElementById('subsidyForm');
         const acknowledgementCheck = document.getElementById('acknowledgementCheck');
-        const submitButton = document.getElementById('submitButton');
         
         const alertModal = document.getElementById('alertModal');
         const modalContent = document.getElementById('modalContent');
@@ -442,6 +460,7 @@
         }
 
         function openModal(title, message, isSuccess = false) {
+            const submitButton = document.getElementById('submitButton');
             let color = isSuccess ? 'text-green-600' : 'text-red-600';
             modalContent.innerHTML = `
                 <h3 class="text-xl font-bold ${color} mb-4">${title}</h3>
@@ -450,6 +469,11 @@
             `;
             document.getElementById('closeModal').addEventListener('click', closeModalHandler);
             alertModal.classList.add('open');
+            // モーダルが開いたとき、送信ボタンがローディング状態なら元に戻す
+            if (submitButton.textContent === "データを保存中...") {
+                submitButton.textContent = "この内容で無料相談を申し込む";
+                if(isAuthReady) submitButton.disabled = false;
+            }
         }
 
         function closeModalHandler() {
@@ -593,9 +617,10 @@
         });
 
 
-        // --- フォーム送信ロジックの再修正（Firestore保存方式） ---
+        // --- フォーム送信ロジック（Firestore保存方式） ---
         subsidyForm.addEventListener('submit', async (e) => {
             e.preventDefault(); 
+            const submitButton = document.getElementById('submitButton');
             
             if (!acknowledgementCheck.checked) {
                 openModal('確認が必要です', 'フォームを送信するには、**助成金支給保証ではないことについての理解**のチェックボックスにチェックを入れてください。');
@@ -603,8 +628,9 @@
                 return;
             }
 
+            // 認証が完了していない場合はここでブロックされる（ボタンもdisabledになっているはず）
             if (!isAuthReady || !userId || !db) {
-                openModal('システム準備中', 'システムがまだ初期化中です。数秒待ってからもう一度お試しください。', false);
+                openModal('システム準備中', 'システムがまだ初期化中です。数秒待ってから、ボタンが有効になったことを確認して、もう一度お試しください。', false);
                 return;
             }
             
@@ -649,9 +675,7 @@
                 // Firestore保存エラーが発生した場合
                 openModal('送信失敗', 'データベースへの保存に失敗しました。システムのエラーです。時間をおいて再度お試しいただくか、担当者まで直接ご連絡ください。', false);
             } finally {
-                // 成功/失敗にかかわらず、ボタンを元に戻す
-                submitButton.disabled = false;
-                submitButton.textContent = "この内容で無料相談を申し込む";
+                // 成功/失敗にかかわらず、ボタンを元に戻す処理はopenModal内で行う
             }
         });
 
@@ -667,6 +691,10 @@
         document.querySelectorAll('a[href^="#"]').forEach(anchor => {
             anchor.addEventListener('click', function (e) {
                 e.preventDefault();
+                // 認証完了後のヘッダーボタンのみリンクとして機能するように修正
+                if (this.id === 'headerCta' && this.disabled) {
+                    return; 
+                }
                 document.querySelector(this.getAttribute('href')).scrollIntoView({
                     behavior: 'smooth'
                 });
